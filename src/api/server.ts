@@ -8,6 +8,7 @@ import { metaWebhookRouter } from "./webhooks/meta.js";
 import { googleWebhookRouter } from "./webhooks/google.js";
 import { whatsappWebhookRouter } from "./webhooks/whatsapp.js";
 import { pipedriveWebhookRouter } from "./webhooks/pipedrive.js";
+import { proposalRouter } from "./proposals.js";
 
 const log = createChildLogger("server");
 
@@ -43,6 +44,9 @@ export function createServer() {
   app.use("/webhooks/google", webhookLimiter, googleWebhookRouter);
   app.use("/webhooks/whatsapp", webhookLimiter, whatsappWebhookRouter);
   app.use("/webhooks/pipedrive", webhookLimiter, pipedriveWebhookRouter);
+
+  // API routes
+  app.use("/api/proposals", proposalRouter);
 
   // 404
   app.use((_req, res) => {

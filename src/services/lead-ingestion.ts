@@ -9,6 +9,7 @@ import {
 } from "../connectors/pipedrive/client.js";
 import { scoreLead } from "./lead-scoring.js";
 import { startSla } from "./sla-monitor.js";
+import { startSequenceForLead } from "./follow-up-sequences.js";
 import type { NewLead, Lead } from "../db/schemas/types.js";
 
 const log = createChildLogger("service:lead-ingestion");
@@ -145,6 +146,13 @@ export async function ingestLead(
     });
   } catch (err) {
     log.error({ err, leadId: lead.id }, "WhatsApp notification failed");
+  }
+
+  // ── Start follow-up sequence ──
+  try {
+    await startSequenceForLead(lead);
+  } catch (err) {
+    log.error({ err, leadId: lead.id }, "Follow-up sequence start failed");
   }
 
   log.info({ leadId: lead.id, score }, "Lead ingested successfully");

@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { createChildLogger } from "../../config/logger.js";
 import { isNewWebhookEvent, markWebhookStatus } from "../../services/webhook-guard.js";
 import { ingestLead } from "../../services/lead-ingestion.js";
+import { cancelSequencesForLead } from "../../services/follow-up-sequences.js";
 import { db } from "../../db/connection.js";
 
 const log = createChildLogger("webhook:whatsapp");
@@ -83,6 +84,13 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response) => {
           metadata: { message_id: messageId },
         })
         .execute();
+
+      // Cancel follow-up sequences — lead responded
+      try {
+        await cancelSequencesForLead(existing.id, "responded");
+      } catch (seqErr) {
+        log.error({ err: seqErr, leadId: existing.id }, "Failed to cancel sequences");
+      }
 
       await markWebhookStatus(idempotencyKey, "processed");
       return;

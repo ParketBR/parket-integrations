@@ -115,6 +115,246 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    name: "006_create_follow_up_sequences",
+    up: `
+      CREATE TABLE IF NOT EXISTS follow_up_sequences (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name TEXT NOT NULL,
+        funnel TEXT NOT NULL CHECK (funnel IN ('architects','end_client','developers')),
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS follow_up_steps (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        sequence_id UUID NOT NULL REFERENCES follow_up_sequences(id) ON DELETE CASCADE,
+        step_order INTEGER NOT NULL,
+        delay_minutes INTEGER NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'whatsapp' CHECK (channel IN ('whatsapp','email')),
+        template TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(sequence_id, step_order)
+      );
+
+      CREATE TABLE IF NOT EXISTS follow_up_executions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        sequence_id UUID NOT NULL REFERENCES follow_up_sequences(id),
+        current_step INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','completed','cancelled','responded')),
+        next_run_at TIMESTAMPTZ,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_followup_exec_lead ON follow_up_executions(lead_id);
+      CREATE INDEX IF NOT EXISTS idx_followup_exec_status ON follow_up_executions(status) WHERE status = 'active';
+      CREATE INDEX IF NOT EXISTS idx_followup_exec_next_run ON follow_up_executions(next_run_at) WHERE status = 'active';
+    `,
+  },
+  {
+    name: "007_create_proposals",
+    up: `
+      CREATE TABLE IF NOT EXISTS proposals (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        pipedrive_deal_id BIGINT,
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','viewed','accepted','rejected','expired')),
+
+        client_name TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        project_type TEXT,
+        location TEXT,
+
+        items JSONB NOT NULL DEFAULT '[]',
+        total_value NUMERIC NOT NULL DEFAULT 0,
+        payment_terms TEXT,
+        validity_days INTEGER NOT NULL DEFAULT 15,
+
+        google_doc_id TEXT,
+        pdf_url TEXT,
+
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        sent_at TIMESTAMPTZ,
+        viewed_at TIMESTAMPTZ,
+        responded_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_proposals_lead ON proposals(lead_id);
+      CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+      CREATE INDEX IF NOT EXISTS idx_proposals_deal ON proposals(pipedrive_deal_id);
+    `,
+  },
+  {
+    name: "008_create_pipeline_snapshots",
+    up: `
+      CREATE TABLE IF NOT EXISTS pipeline_snapshots (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        snapshot_date DATE NOT NULL,
+        funnel TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        deal_count INTEGER NOT NULL DEFAULT 0,
+        total_value NUMERIC NOT NULL DEFAULT 0,
+        avg_age_days NUMERIC NOT NULL DEFAULT 0,
+        conversion_rate NUMERIC,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_snapshot_date ON pipeline_snapshots(snapshot_date);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshot_unique ON pipeline_snapshots(snapshot_date, funnel, stage);
+    `,
+  },
+  {
+    name: "009_seed_follow_up_sequences",
+    up: `
+      -- End Client sequence (most common)
+      INSERT INTO follow_up_sequences (id, name, funnel) VALUES
+        ('a0000000-0000-0000-0000-000000000001', 'Cliente Final — Padrao', 'end_client');
+
+      INSERT INTO follow_up_steps (sequence_id, step_order, delay_minutes, channel, template) VALUES
+        ('a0000000-0000-0000-0000-000000000001', 1, 60, 'whatsapp',
+         'Ola {{name}}! Aqui e a Parket. Recebemos seu contato e ficamos felizes com seu interesse. Um de nossos consultores vai entrar em contato em breve para entender melhor seu projeto. Enquanto isso, tem alguma duvida que possamos ajudar?'),
+        ('a0000000-0000-0000-0000-000000000001', 2, 1440, 'whatsapp',
+         'Ola {{name}}, tudo bem? Aqui e a Parket. Gostavamos de saber mais sobre seu projeto{{#if location}} em {{location}}{{/if}}. Podemos agendar uma conversa rapida para entender suas necessidades e apresentar as melhores opcoes? Qual o melhor horario para voce?'),
+        ('a0000000-0000-0000-0000-000000000001', 3, 4320, 'whatsapp',
+         '{{name}}, sabemos que escolher o piso perfeito e uma decisao importante. Na Parket, oferecemos consultoria tecnica gratuita para garantir o melhor resultado para seu projeto. Posso agendar uma visita ao nosso showroom ou uma videochamada?'),
+        ('a0000000-0000-0000-0000-000000000001', 4, 10080, 'whatsapp',
+         'Ola {{name}}! Passando para lembrar que a Parket esta a disposicao para seu projeto. Temos condicoes especiais este mes. Gostaria de saber mais?');
+
+      -- Architect sequence
+      INSERT INTO follow_up_sequences (id, name, funnel) VALUES
+        ('a0000000-0000-0000-0000-000000000002', 'Arquitetos — Relacionamento', 'architects');
+
+      INSERT INTO follow_up_steps (sequence_id, step_order, delay_minutes, channel, template) VALUES
+        ('a0000000-0000-0000-0000-000000000002', 1, 30, 'whatsapp',
+         'Ola {{name}}! Aqui e a Parket. Recebemos seu contato e ficamos muito felizes. Somos especializados em pisos de madeira de alto padrao e trabalhamos com diversos escritorios de arquitetura. Posso enviar nosso portfolio tecnico?'),
+        ('a0000000-0000-0000-0000-000000000002', 2, 2880, 'whatsapp',
+         '{{name}}, gostaria de apresentar nossos diferenciais tecnicos para especificacao: biblioteca 3D/BIM, amostras premium e suporte tecnico dedicado. Podemos agendar uma apresentacao no seu escritorio ou via video?'),
+        ('a0000000-0000-0000-0000-000000000002', 3, 10080, 'whatsapp',
+         'Ola {{name}}! A Parket esta preparando um evento exclusivo para arquitetos parceiros. Gostaria de receber o convite? Tambem posso enviar amostras dos nossos lancamentos.');
+
+      -- Developer sequence
+      INSERT INTO follow_up_sequences (id, name, funnel) VALUES
+        ('a0000000-0000-0000-0000-000000000003', 'Incorporadores — B2B', 'developers');
+
+      INSERT INTO follow_up_steps (sequence_id, step_order, delay_minutes, channel, template) VALUES
+        ('a0000000-0000-0000-0000-000000000003', 1, 60, 'whatsapp',
+         'Ola {{name}}! Aqui e a Parket. Somos referencia em pisos de madeira para empreendimentos de alto padrao. Trabalhamos com as principais incorporadoras do Brasil. Posso enviar cases e condicoes para volume?'),
+        ('a0000000-0000-0000-0000-000000000003', 2, 4320, 'whatsapp',
+         '{{name}}, a Parket oferece condicoes especiais para incorporadoras: pricing por volume, cronograma de entregas flexivel e suporte tecnico na obra. Gostaria de agendar uma reuniao para discutir seu empreendimento?');
+    `,
+  },
+  {
+    name: "010_create_dashboard_views",
+    up: `
+      -- Pipeline overview by stage
+      CREATE OR REPLACE VIEW v_pipeline_overview AS
+      SELECT
+        funnel,
+        stage,
+        COUNT(*) as deal_count,
+        COALESCE(SUM(estimated_ticket), 0) as total_value,
+        ROUND(AVG(EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400)::numeric, 1) as avg_age_days
+      FROM leads
+      WHERE stage NOT IN ('fechado', 'perdido')
+      GROUP BY funnel, stage
+      ORDER BY funnel,
+        CASE stage
+          WHEN 'triagem' THEN 1
+          WHEN 'qualificado' THEN 2
+          WHEN 'reuniao' THEN 3
+          WHEN 'proposta' THEN 4
+          WHEN 'negociacao' THEN 5
+        END;
+
+      -- Conversion rates between stages
+      CREATE OR REPLACE VIEW v_conversion_rates AS
+      WITH stage_counts AS (
+        SELECT
+          funnel,
+          COUNT(*) FILTER (WHERE stage IN ('triagem','qualificado','reuniao','proposta','negociacao','fechado')) as triagem,
+          COUNT(*) FILTER (WHERE stage IN ('qualificado','reuniao','proposta','negociacao','fechado')) as qualificado,
+          COUNT(*) FILTER (WHERE stage IN ('reuniao','proposta','negociacao','fechado')) as reuniao,
+          COUNT(*) FILTER (WHERE stage IN ('proposta','negociacao','fechado')) as proposta,
+          COUNT(*) FILTER (WHERE stage IN ('negociacao','fechado')) as negociacao,
+          COUNT(*) FILTER (WHERE stage = 'fechado') as fechado
+        FROM leads
+        GROUP BY funnel
+      )
+      SELECT
+        funnel,
+        triagem as total_leads,
+        CASE WHEN triagem > 0 THEN ROUND(100.0 * qualificado / triagem, 1) END as pct_qualificacao,
+        CASE WHEN qualificado > 0 THEN ROUND(100.0 * reuniao / qualificado, 1) END as pct_reuniao,
+        CASE WHEN reuniao > 0 THEN ROUND(100.0 * proposta / reuniao, 1) END as pct_proposta,
+        CASE WHEN proposta > 0 THEN ROUND(100.0 * fechado / proposta, 1) END as pct_fechamento,
+        CASE WHEN triagem > 0 THEN ROUND(100.0 * fechado / triagem, 1) END as pct_total
+      FROM stage_counts;
+
+      -- SLA compliance
+      CREATE OR REPLACE VIEW v_sla_compliance AS
+      SELECT
+        sla_type,
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE breached = FALSE AND completed_at IS NOT NULL) as met,
+        COUNT(*) FILTER (WHERE breached = TRUE) as breached,
+        COUNT(*) FILTER (WHERE completed_at IS NULL AND breached = FALSE) as pending,
+        CASE WHEN COUNT(*) FILTER (WHERE completed_at IS NOT NULL OR breached = TRUE) > 0
+          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE breached = FALSE AND completed_at IS NOT NULL) /
+               COUNT(*) FILTER (WHERE completed_at IS NOT NULL OR breached = TRUE), 1)
+        END as compliance_pct
+      FROM sla_events
+      GROUP BY sla_type;
+
+      -- Lead sources performance
+      CREATE OR REPLACE VIEW v_lead_sources AS
+      SELECT
+        source,
+        COUNT(*) as total_leads,
+        ROUND(AVG(score), 0) as avg_score,
+        COUNT(*) FILTER (WHERE stage = 'fechado') as closed,
+        COALESCE(SUM(estimated_ticket) FILTER (WHERE stage = 'fechado'), 0) as closed_value,
+        CASE WHEN COUNT(*) > 0
+          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE stage = 'fechado') / COUNT(*), 1)
+        END as close_rate
+      FROM leads
+      GROUP BY source
+      ORDER BY total_leads DESC;
+
+      -- Weekly scoreboard
+      CREATE OR REPLACE VIEW v_weekly_scoreboard AS
+      SELECT
+        DATE_TRUNC('week', created_at)::date as week_start,
+        COUNT(*) as new_leads,
+        COUNT(*) FILTER (WHERE stage NOT IN ('triagem','perdido')) as qualified,
+        COUNT(*) FILTER (WHERE stage = 'fechado') as closed,
+        COALESCE(SUM(estimated_ticket) FILTER (WHERE stage = 'fechado'), 0) as revenue,
+        ROUND(AVG(score), 0) as avg_score
+      FROM leads
+      GROUP BY DATE_TRUNC('week', created_at)
+      ORDER BY week_start DESC;
+
+      -- Proposal performance
+      CREATE OR REPLACE VIEW v_proposal_performance AS
+      SELECT
+        DATE_TRUNC('week', created_at)::date as week_start,
+        COUNT(*) as total_proposals,
+        COUNT(*) FILTER (WHERE status = 'accepted') as accepted,
+        COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
+        COUNT(*) FILTER (WHERE status = 'expired') as expired,
+        COALESCE(SUM(total_value) FILTER (WHERE status = 'accepted'), 0) as accepted_value,
+        CASE WHEN COUNT(*) FILTER (WHERE status IN ('accepted','rejected')) > 0
+          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'accepted') /
+               COUNT(*) FILTER (WHERE status IN ('accepted','rejected')), 1)
+        END as win_rate
+      FROM proposals
+      GROUP BY DATE_TRUNC('week', created_at)
+      ORDER BY week_start DESC;
+    `,
+  },
 ];
 
 async function migrate() {

@@ -90,10 +90,101 @@ export interface WebhookLogTable {
 export type WebhookLog = Selectable<WebhookLogTable>;
 export type NewWebhookLog = Insertable<WebhookLogTable>;
 
+// ─── Follow-up Sequence ────────────────────────────
+export interface FollowUpSequenceTable {
+  id: Generated<string>;
+  name: string;
+  funnel: "architects" | "end_client" | "developers";
+  active: Generated<boolean>;
+  created_at: Generated<Date>;
+}
+
+export type FollowUpSequence = Selectable<FollowUpSequenceTable>;
+
+export interface FollowUpStepTable {
+  id: Generated<string>;
+  sequence_id: string;
+  step_order: number;
+  delay_minutes: number;
+  channel: "whatsapp" | "email";
+  template: string;
+  created_at: Generated<Date>;
+}
+
+export type FollowUpStep = Selectable<FollowUpStepTable>;
+
+export interface FollowUpExecutionTable {
+  id: Generated<string>;
+  lead_id: string;
+  sequence_id: string;
+  current_step: number;
+  status: "active" | "completed" | "cancelled" | "responded";
+  next_run_at: Date | null;
+  started_at: Generated<Date>;
+  completed_at: Date | null;
+}
+
+export type FollowUpExecution = Selectable<FollowUpExecutionTable>;
+
+// ─── Proposal ──────────────────────────────────────
+export interface ProposalTable {
+  id: Generated<string>;
+  lead_id: string;
+  pipedrive_deal_id: number | null;
+  version: Generated<number>;
+  status: "draft" | "sent" | "viewed" | "accepted" | "rejected" | "expired";
+
+  // Content
+  client_name: string;
+  project_name: string;
+  project_type: string | null;
+  location: string | null;
+
+  // Items
+  items: Record<string, unknown>[];
+  total_value: number;
+  payment_terms: string | null;
+  validity_days: Generated<number>;
+
+  // Files
+  google_doc_id: string | null;
+  pdf_url: string | null;
+
+  // Timestamps
+  created_at: Generated<Date>;
+  sent_at: Date | null;
+  viewed_at: Date | null;
+  responded_at: Date | null;
+  expires_at: Date | null;
+}
+
+export type Proposal = Selectable<ProposalTable>;
+export type NewProposal = Insertable<ProposalTable>;
+
+// ─── Pipeline Snapshot ─────────────────────────────
+export interface PipelineSnapshotTable {
+  id: Generated<string>;
+  snapshot_date: Date;
+  funnel: string;
+  stage: string;
+  deal_count: number;
+  total_value: number;
+  avg_age_days: number;
+  conversion_rate: number | null;
+  created_at: Generated<Date>;
+}
+
+export type PipelineSnapshot = Selectable<PipelineSnapshotTable>;
+
 // ─── Database ──────────────────────────────────────
 export interface Database {
   leads: LeadTable;
   activities: ActivityTable;
   sla_events: SlaEventTable;
   webhook_logs: WebhookLogTable;
+  follow_up_sequences: FollowUpSequenceTable;
+  follow_up_steps: FollowUpStepTable;
+  follow_up_executions: FollowUpExecutionTable;
+  proposals: ProposalTable;
+  pipeline_snapshots: PipelineSnapshotTable;
 }
