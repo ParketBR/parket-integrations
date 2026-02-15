@@ -1,0 +1,222 @@
+{
+  "name": "Parket — WhatsApp Partner Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhooks/whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-whatsapp",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ {\"status\": \"ok\", \"correlation_id\": $json.correlation_id} }",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [500, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "events",
+        "columns": "correlation_id,event_type,source,payload,idempotency_key,status",
+        "options": {
+          "priority": "NORMAL"
+        }
+      },
+      "id": "insert-event",
+      "name": "Registrar Evento",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 400],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      },
+      "notesInFlow": true,
+      "notes": "Insere na tabela events com idempotency_key para dedup"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrair dados da mensagem WhatsApp\nconst body = $input.first().json.body;\nconst msg = body.data || body;\n\nconst phone = (msg.key?.remoteJid || msg.from || '').replace('@s.whatsapp.net', '').replace('@c.us', '');\nconst pushName = msg.pushName || msg.senderName || '';\nconst messageType = msg.messageType || (msg.message?.conversation ? 'text' : 'media');\nconst content = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.body || '';\n\n// Normalizar telefone BR\nlet phoneNorm = phone.replace(/\\D/g, '');\nif (phoneNorm.length === 11) phoneNorm = '55' + phoneNorm;\nelse if (phoneNorm.length === 10) phoneNorm = '55' + phoneNorm.slice(0,2) + '9' + phoneNorm.slice(2);\n\nconst correlationId = $input.first().json.headers?.['x-correlation-id'] || \n  require('crypto').randomUUID();\n\nreturn [{\n  json: {\n    correlation_id: correlationId,\n    phone: phone,\n    phone_normalized: phoneNorm,\n    name: pushName,\n    message_type: messageType,\n    content: content,\n    raw: body,\n    idempotency_key: `whatsapp_${msg.key?.id || msg.messageId || Date.now()}`\n  }\n}];"
+      },
+      "id": "parse-whatsapp",
+      "name": "Parse WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 400]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "leads",
+        "limit": 1,
+        "where": {
+          "values": [
+            {
+              "column": "phone_normalized",
+              "value": "={{ $json.phone_normalized }}"
+            }
+          ]
+        }
+      },
+      "id": "check-lead-exists",
+      "name": "Buscar Lead Existente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1000, 400],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-lead-exists",
+      "name": "Lead Existe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "conversations",
+        "columns": "lead_id,correlation_id,direction,phone,message_type,content,whatsapp_msg_id",
+        "options": {}
+      },
+      "id": "save-conversation-existing",
+      "name": "Salvar Conversa (Existente)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      },
+      "notesInFlow": true,
+      "notes": "Lead ja existe — apenas registrar mensagem"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "leads",
+        "columns": "correlation_id,name,phone,phone_normalized,source,funnel,status,raw_payload",
+        "options": {
+          "priority": "NORMAL"
+        }
+      },
+      "id": "create-lead",
+      "name": "Criar Novo Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1500, 500],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      },
+      "notesInFlow": true,
+      "notes": "Novo lead via WhatsApp — source: whatsapp"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Notificar grupo SDR no WhatsApp\nconst lead = $input.first().json;\nreturn [{\n  json: {\n    phone: $env.WHATSAPP_SDR_GROUP,\n    message: `🟢 *Novo lead WhatsApp*\\n\\n` +\n      `*Nome:* ${lead.name || 'Não informado'}\\n` +\n      `*Telefone:* ${lead.phone}\\n` +\n      `*Mensagem:* ${lead.content?.substring(0, 200) || '-'}\\n\\n` +\n      `Responder em até 5 min (SLA)`\n  }\n}];"
+      },
+      "id": "notify-sdr",
+      "name": "Notificar SDR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1750, 500]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          { "node": "Respond OK", "type": "main", "index": 0 },
+          { "node": "Registrar Evento", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Registrar Evento": {
+      "main": [
+        [{ "node": "Parse WhatsApp Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse WhatsApp Message": {
+      "main": [
+        [{ "node": "Buscar Lead Existente", "type": "main", "index": 0 }]
+      ]
+    },
+    "Buscar Lead Existente": {
+      "main": [
+        [{ "node": "Lead Existe?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Lead Existe?": {
+      "main": [
+        [{ "node": "Salvar Conversa (Existente)", "type": "main", "index": 0 }],
+        [{ "node": "Criar Novo Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Criar Novo Lead": {
+      "main": [
+        [{ "node": "Notificar SDR", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo"
+  },
+  "tags": [
+    { "name": "whatsapp" },
+    { "name": "lead-capture" },
+    { "name": "production" }
+  ]
+}

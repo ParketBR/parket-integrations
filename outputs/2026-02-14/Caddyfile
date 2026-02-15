@@ -1,0 +1,45 @@
+# =============================================
+# Parket Control Tower — Caddy Reverse Proxy
+# HTTPS automatico via Let's Encrypt
+# =============================================
+
+# n8n
+{$N8N_DOMAIN} {
+	reverse_proxy n8n:5678
+
+	# Headers para WebSocket (n8n precisa)
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+}
+
+# Metabase
+{$METABASE_DOMAIN} {
+	reverse_proxy metabase:3000
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+	}
+}
+
+# API (webhooks e endpoints da aplicacao)
+{$API_DOMAIN} {
+	# Healthcheck
+	handle /health {
+		respond "OK" 200
+	}
+
+	# Webhook endpoints — proxy para n8n
+	handle /webhooks/* {
+		reverse_proxy n8n:5678
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+}

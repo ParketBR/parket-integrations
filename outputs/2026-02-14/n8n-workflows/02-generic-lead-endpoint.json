@@ -1,0 +1,312 @@
+{
+  "name": "Parket — Generic Lead Endpoint (Meta/Google/Form)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhooks/leads",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-lead",
+      "name": "Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ {\"status\": \"ok\", \"correlation_id\": $json.correlation_id} }",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-lead-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [500, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Detectar source e extrair campos\nconst headers = $input.first().json.headers || {};\nconst body = $input.first().json.body;\nconst query = $input.first().json.query || {};\n\nlet source = 'unknown';\nlet name = '';\nlet phone = '';\nlet email = '';\nlet funnel = 'end_client';\nlet clientType = '';\nlet utmSource = '';\nlet utmMedium = '';\nlet utmCampaign = '';\nlet idempotencyKey = '';\n\n// ── Meta Lead Ads ──\nif (body.entry && body.object === 'page') {\n  source = 'meta';\n  const leadData = body.entry[0]?.changes?.[0]?.value;\n  const fields = leadData?.field_data || [];\n  name = fields.find(f => f.name === 'full_name')?.values?.[0] || '';\n  phone = fields.find(f => f.name === 'phone_number')?.values?.[0] || '';\n  email = fields.find(f => f.name === 'email')?.values?.[0] || '';\n  clientType = fields.find(f => f.name === 'client_type')?.values?.[0] || '';\n  idempotencyKey = `meta_${leadData?.leadgen_id || Date.now()}`;\n}\n// ── Google Ads ──\nelse if (body.google_key || query.gclid || body.gclid) {\n  source = 'google';\n  name = body.name || body.full_name || '';\n  phone = body.phone || body.phone_number || '';\n  email = body.email || '';\n  clientType = body.client_type || '';\n  idempotencyKey = `google_${body.gclid || body.google_key || Date.now()}`;\n}\n// ── Formulario generico ──\nelse {\n  source = body.source || 'form';\n  name = body.name || body.nome || '';\n  phone = body.phone || body.telefone || body.whatsapp || '';\n  email = body.email || '';\n  clientType = body.client_type || body.tipo || '';\n  funnel = body.funnel || 'end_client';\n  idempotencyKey = `form_${body.form_id || body.submission_id || Date.now()}`;\n}\n\n// UTMs\nutmSource = body.utm_source || query.utm_source || '';\nutmMedium = body.utm_medium || query.utm_medium || '';\nutmCampaign = body.utm_campaign || query.utm_campaign || '';\n\n// Detectar funnel pelo client_type\nif (clientType === 'architect' || clientType === 'arquiteto') funnel = 'architects';\nelse if (clientType === 'developer' || clientType === 'incorporador') funnel = 'developers';\n\n// Normalizar telefone BR\nlet phoneNorm = phone.replace(/\\D/g, '');\nif (phoneNorm.length === 11) phoneNorm = '55' + phoneNorm;\nelse if (phoneNorm.length === 10) phoneNorm = '55' + phoneNorm.slice(0,2) + '9' + phoneNorm.slice(2);\nelse if (phoneNorm.length === 8 || phoneNorm.length === 9) phoneNorm = ''; // invalido sem DDD\n\nconst correlationId = require('crypto').randomUUID();\n\nreturn [{\n  json: {\n    correlation_id: correlationId,\n    source,\n    name,\n    phone,\n    phone_normalized: phoneNorm,\n    email,\n    funnel,\n    client_type: clientType,\n    utm_source: utmSource,\n    utm_medium: utmMedium,\n    utm_campaign: utmCampaign,\n    idempotency_key: idempotencyKey,\n    raw_payload: body\n  }\n}];"
+      },
+      "id": "parse-lead",
+      "name": "Parse & Normalize Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.phone_normalized }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "leftValue": "={{ $json.name }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "validate-lead",
+      "name": "Dados Validos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "events",
+        "columns": "correlation_id,event_type,source,payload,idempotency_key,status",
+        "options": {}
+      },
+      "id": "insert-lead-event",
+      "name": "Registrar Evento",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1000, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "leads",
+        "limit": 1,
+        "where": {
+          "values": [
+            {
+              "column": "phone_normalized",
+              "value": "={{ $json.phone_normalized }}"
+            }
+          ]
+        }
+      },
+      "id": "check-dedup",
+      "name": "Check Duplicata",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1000, 500],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "is-new-lead",
+      "name": "Lead Novo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1250, 500]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "leads",
+        "columns": "correlation_id,name,phone,phone_normalized,email,source,funnel,client_type,utm_source,utm_medium,utm_campaign,raw_payload,status",
+        "options": {}
+      },
+      "id": "insert-lead",
+      "name": "Inserir Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1500, 400],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Scoring simples\nconst lead = $input.first().json;\nlet score = 0;\n\n// Source (25pts)\nconst sourceScores = {meta: 20, google: 25, whatsapp: 15, referral: 25, form: 10};\nscore += sourceScores[lead.source] || 10;\n\n// Client type (20pts)\nconst typeScores = {architect: 20, developer: 20, end_client: 15, builder: 18};\nscore += typeScores[lead.client_type] || 10;\n\n// Completeness (15pts)\nif (lead.email) score += 5;\nif (lead.phone_normalized) score += 5;\nif (lead.name?.includes(' ')) score += 5;\n\n// UTM bonus\nif (lead.utm_source) score += 5;\n\nreturn [{ json: { ...lead, score: Math.min(score, 100) } }];"
+      },
+      "id": "score-lead",
+      "name": "Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1750, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "leads",
+        "whereColumns": "id",
+        "columns": "score",
+        "options": {}
+      },
+      "id": "update-score",
+      "name": "Atualizar Score",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2000, 400],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Notificar grupo SDR via WhatsApp\nconst lead = $input.first().json;\nconst funnelLabel = {end_client: 'Cliente Final', architects: 'Arquiteto', developers: 'Incorporador'};\nreturn [{\n  json: {\n    phone: $env.WHATSAPP_SDR_GROUP,\n    message: `🔵 *Novo lead ${lead.source.toUpperCase()}*\\n\\n` +\n      `*Nome:* ${lead.name}\\n` +\n      `*Telefone:* ${lead.phone}\\n` +\n      `*Email:* ${lead.email || '-'}\\n` +\n      `*Funil:* ${funnelLabel[lead.funnel] || lead.funnel}\\n` +\n      `*Score:* ${lead.score}/100\\n\\n` +\n      `Responder em até 5 min (SLA)`\n  }\n}];"
+      },
+      "id": "notify-sdr-lead",
+      "name": "Notificar SDR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "sla_events",
+        "columns": "lead_id,sla_type,deadline",
+        "options": {}
+      },
+      "id": "start-sla",
+      "name": "Iniciar SLA 5min",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2000, 600],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      },
+      "notesInFlow": true,
+      "notes": "SLA first_response: 5 minutos"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "activities",
+        "columns": "lead_id,correlation_id,activity_type,description,performed_by",
+        "options": {}
+      },
+      "id": "log-activity-dup",
+      "name": "Log Duplicata",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1500, 650],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Parket Postgres"
+        }
+      },
+      "notesInFlow": true,
+      "notes": "Lead duplicado — registrar atividade no lead existente"
+    }
+  ],
+  "connections": {
+    "Lead Webhook": {
+      "main": [
+        [
+          { "node": "Respond OK", "type": "main", "index": 0 },
+          { "node": "Parse & Normalize Lead", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse & Normalize Lead": {
+      "main": [
+        [{ "node": "Dados Validos?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Dados Validos?": {
+      "main": [
+        [
+          { "node": "Registrar Evento", "type": "main", "index": 0 },
+          { "node": "Check Duplicata", "type": "main", "index": 0 }
+        ],
+        []
+      ]
+    },
+    "Check Duplicata": {
+      "main": [
+        [{ "node": "Lead Novo?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Lead Novo?": {
+      "main": [
+        [{ "node": "Inserir Lead", "type": "main", "index": 0 }],
+        [{ "node": "Log Duplicata", "type": "main", "index": 0 }]
+      ]
+    },
+    "Inserir Lead": {
+      "main": [
+        [
+          { "node": "Scoring", "type": "main", "index": 0 },
+          { "node": "Iniciar SLA 5min", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Scoring": {
+      "main": [
+        [{ "node": "Atualizar Score", "type": "main", "index": 0 }]
+      ]
+    },
+    "Atualizar Score": {
+      "main": [
+        [{ "node": "Notificar SDR", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo"
+  },
+  "tags": [
+    { "name": "lead-capture" },
+    { "name": "meta" },
+    { "name": "google" },
+    { "name": "production" }
+  ]
+}

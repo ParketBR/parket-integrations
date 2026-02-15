@@ -1,0 +1,310 @@
+# ============================================================
+# Parket Control Tower — Event Ingestion Workflow
+# Google Cloud Workflows
+#
+# Recebe evento do Cloud Run receiver e roteia por tipo.
+# Todos os passos geram logs estruturados para rastreabilidade.
+# ============================================================
+
+main:
+  params: [input]
+  steps:
+
+    # ----------------------------------------------------------
+    # STEP 1: Receive & log event
+    # ----------------------------------------------------------
+    - log_event_received:
+        call: sys.log
+        args:
+          text: '${"[CONTROL TOWER] Event received — type=" + input.event_type + " correlation_id=" + input.correlation_id}'
+          severity: INFO
+
+    - assign_vars:
+        assign:
+          - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: "southamerica-east1"
+          - cloud_run_url: '${"https://parket-control-tower-" + region + "-run.app"}'
+          - event_type: ${input.event_type}
+          - correlation_id: ${input.correlation_id}
+          - event_id: ${input.event_id}
+          - lead_id: ${default(map.get(input, "lead_id"), null)}
+          - payload: ${input.payload}
+          - source: ${default(map.get(input, "source"), "unknown")}
+
+    # ----------------------------------------------------------
+    # STEP 2: Validate event
+    # ----------------------------------------------------------
+    - validate_event:
+        switch:
+          - condition: ${event_type == ""}
+            raise:
+              code: 400
+              message: "event_type is required"
+          - condition: ${correlation_id == ""}
+            raise:
+              code: 400
+              message: "correlation_id is required"
+
+    - log_validation_passed:
+        call: sys.log
+        args:
+          text: '${"[CONTROL TOWER] Validation passed — type=" + event_type + " cid=" + correlation_id}'
+          severity: INFO
+
+    # ----------------------------------------------------------
+    # STEP 3: Route by event type
+    # ----------------------------------------------------------
+    - route_event:
+        switch:
+          - condition: ${event_type == "lead_created"}
+            next: handle_lead_created
+          - condition: ${event_type == "message_received"}
+            next: handle_message_received
+          - condition: ${event_type == "stage_changed"}
+            next: handle_stage_changed
+          - condition: ${event_type == "proposal_sent"}
+            next: handle_proposal_sent
+          - condition: ${event_type == "won"}
+            next: handle_won
+          - condition: ${event_type == "obra_created"}
+            next: handle_obra_created
+        next: handle_unknown_event
+
+    # ----------------------------------------------------------
+    # HANDLER: lead_created — criar ou atualizar lead
+    # ----------------------------------------------------------
+    - handle_lead_created:
+        steps:
+          - log_lead_created:
+              call: sys.log
+              args:
+                text: '${"[LEAD_CREATED] Processing — phone=" + default(map.get(payload, "phone_normalized"), "unknown") + " source=" + source + " cid=" + correlation_id}'
+                severity: INFO
+
+          - upsert_lead:
+              call: http.post
+              args:
+                url: '${cloud_run_url + "/internal/lead/upsert"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  correlation_id: ${correlation_id}
+                  event_id: ${event_id}
+                  payload: ${payload}
+              result: lead_result
+
+          - log_lead_result:
+              call: sys.log
+              args:
+                text: '${"[LEAD_CREATED] Lead upserted — lead_id=" + default(map.get(lead_result.body, "lead_id"), "unknown") + " action=" + default(map.get(lead_result.body, "action"), "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+
+          - assign_lead_id:
+              assign:
+                - lead_id: ${default(map.get(lead_result.body, "lead_id"), lead_id)}
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # HANDLER: message_received — salvar conversa
+    # ----------------------------------------------------------
+    - handle_message_received:
+        steps:
+          - log_message_received:
+              call: sys.log
+              args:
+                text: '${"[MESSAGE_RECEIVED] Processing — cid=" + correlation_id + " source=" + source}'
+                severity: INFO
+
+          - save_conversation:
+              call: http.post
+              args:
+                url: '${cloud_run_url + "/internal/conversation/save"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  correlation_id: ${correlation_id}
+                  event_id: ${event_id}
+                  lead_id: ${lead_id}
+                  payload: ${payload}
+              result: conv_result
+
+          - log_conversation_saved:
+              call: sys.log
+              args:
+                text: '${"[MESSAGE_RECEIVED] Conversation saved — conversation_id=" + default(map.get(conv_result.body, "conversation_id"), "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # HANDLER: stage_changed — atualizar pipeline
+    # ----------------------------------------------------------
+    - handle_stage_changed:
+        steps:
+          - log_stage_changed:
+              call: sys.log
+              args:
+                text: '${"[STAGE_CHANGED] Processing — lead_id=" + default(lead_id, "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+
+          - update_pipeline:
+              call: http.post
+              args:
+                url: '${cloud_run_url + "/internal/pipeline/update"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  correlation_id: ${correlation_id}
+                  event_id: ${event_id}
+                  lead_id: ${lead_id}
+                  from_stage: ${default(map.get(payload, "from_stage"), null)}
+                  to_stage: ${map.get(payload, "to_stage")}
+                  reason: ${default(map.get(payload, "reason"), null)}
+              result: pipeline_result
+
+          - log_pipeline_updated:
+              call: sys.log
+              args:
+                text: '${"[STAGE_CHANGED] Pipeline updated — lead_id=" + default(lead_id, "unknown") + " to_stage=" + default(map.get(payload, "to_stage"), "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # HANDLER: proposal_sent — registrar proposta
+    # ----------------------------------------------------------
+    - handle_proposal_sent:
+        steps:
+          - log_proposal_sent:
+              call: sys.log
+              args:
+                text: '${"[PROPOSAL_SENT] Processing — lead_id=" + default(lead_id, "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+
+          - register_proposal:
+              call: http.post
+              args:
+                url: '${cloud_run_url + "/internal/proposal/register"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  correlation_id: ${correlation_id}
+                  event_id: ${event_id}
+                  lead_id: ${lead_id}
+                  payload: ${payload}
+              result: proposal_result
+
+          - log_proposal_registered:
+              call: sys.log
+              args:
+                text: '${"[PROPOSAL_SENT] Proposal registered — cid=" + correlation_id}'
+                severity: INFO
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # HANDLER: won — marcar como ganho
+    # ----------------------------------------------------------
+    - handle_won:
+        steps:
+          - log_won:
+              call: sys.log
+              args:
+                text: '${"[WON] Processing — lead_id=" + default(lead_id, "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+
+          - mark_lead_won:
+              call: http.post
+              args:
+                url: '${cloud_run_url + "/internal/pipeline/update"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  correlation_id: ${correlation_id}
+                  event_id: ${event_id}
+                  lead_id: ${lead_id}
+                  to_stage: "fechado"
+                  reason: "won"
+              result: won_result
+
+          - log_won_marked:
+              call: sys.log
+              args:
+                text: '${"[WON] Lead marked as won — lead_id=" + default(lead_id, "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # HANDLER: obra_created — criar obra
+    # ----------------------------------------------------------
+    - handle_obra_created:
+        steps:
+          - log_obra_created:
+              call: sys.log
+              args:
+                text: '${"[OBRA_CREATED] Processing — lead_id=" + default(lead_id, "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+
+          - create_obra:
+              call: http.post
+              args:
+                url: '${cloud_run_url + "/internal/obra/create"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  correlation_id: ${correlation_id}
+                  event_id: ${event_id}
+                  lead_id: ${lead_id}
+                  payload: ${payload}
+              result: obra_result
+
+          - log_obra_result:
+              call: sys.log
+              args:
+                text: '${"[OBRA_CREATED] Obra created — obra_id=" + default(map.get(obra_result.body, "obra_id"), "unknown") + " cid=" + correlation_id}'
+                severity: INFO
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # HANDLER: Unknown event type
+    # ----------------------------------------------------------
+    - handle_unknown_event:
+        steps:
+          - log_unknown:
+              call: sys.log
+              args:
+                text: '${"[UNKNOWN] Unhandled event type=" + event_type + " cid=" + correlation_id}'
+                severity: WARNING
+              next: mark_processed
+
+    # ----------------------------------------------------------
+    # STEP 4: Mark event as processed
+    # ----------------------------------------------------------
+    - mark_processed:
+        steps:
+          - update_event_status:
+              call: http.patch
+              args:
+                url: '${cloud_run_url + "/internal/event/" + event_id + "/status"}'
+                headers:
+                  Content-Type: "application/json"
+                  X-Correlation-Id: ${correlation_id}
+                body:
+                  status: "processed"
+
+          - log_completed:
+              call: sys.log
+              args:
+                text: '${"[CONTROL TOWER] Workflow completed — type=" + event_type + " cid=" + correlation_id + " event_id=" + event_id}'
+                severity: INFO
+
+          - return_result:
+              return:
+                status: "completed"
+                event_id: ${event_id}
+                correlation_id: ${correlation_id}
+                event_type: ${event_type}
+                lead_id: ${lead_id}
