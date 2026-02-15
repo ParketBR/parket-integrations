@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { db } from "../db/connection.js";
 import { createChildLogger } from "../config/logger.js";
 import { sendGroupMessage } from "../connectors/whatsapp/client.js";
@@ -40,9 +41,7 @@ export async function detectStaleDeals(
       "leads.stage",
       "leads.funnel",
       "leads.estimated_ticket",
-      db.raw<number>(
-        `EXTRACT(EPOCH FROM (NOW() - leads.updated_at)) / 86400`
-      ).as("days_stale"),
+      sql<number>`EXTRACT(EPOCH FROM (NOW() - leads.updated_at)) / 86400`.as("days_stale"),
     ])
     .where("leads.stage", "not in", ["fechado", "perdido"])
     .where("leads.updated_at", "<", threshold)
@@ -156,7 +155,7 @@ export async function generateWeeklyForecast(): Promise<{
       "funnel",
       "stage",
       db.fn.count("id").as("deal_count"),
-      db.fn.coalesce(db.fn.sum("estimated_ticket"), db.val(0)).as("total_value"),
+      db.fn.coalesce(db.fn.sum("estimated_ticket"), sql.lit(0)).as("total_value"),
     ])
     .where("stage", "not in", ["fechado", "perdido"])
     .groupBy(["funnel", "stage"])

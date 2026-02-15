@@ -73,7 +73,7 @@ proposalRouter.get("/", async (req: Request, res: Response) => {
       query = query.where("lead_id", "=", req.query.lead_id as string);
     }
     if (req.query.status) {
-      query = query.where("status", "=", req.query.status as string);
+      query = query.where("status", "=", req.query.status as any);
     }
 
     const limit = Math.min(Number(req.query.limit) || 50, 100);

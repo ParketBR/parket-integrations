@@ -18,7 +18,7 @@ export function getRedisConnection(): IORedis {
 
 export function createQueue(name: string): Queue {
   return new Queue(name, {
-    connection: getRedisConnection(),
+    connection: getRedisConnection() as any,
     defaultJobOptions: {
       attempts: 3,
       backoff: { type: "exponential", delay: 2000 },
@@ -34,7 +34,7 @@ export function createWorker<T>(
   opts?: Partial<WorkerOptions>
 ): Worker<T> {
   const worker = new Worker<T>(queueName, processor, {
-    connection: getRedisConnection(),
+    connection: getRedisConnection() as any,
     concurrency: 5,
     ...opts,
   });

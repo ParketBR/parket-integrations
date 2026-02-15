@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { db } from "../db/connection.js";
 import { createChildLogger } from "../config/logger.js";
 import { sendProjectUpdate } from "./project-communications.js";
@@ -184,7 +185,7 @@ export async function advanceProjectStatus(
       .selectFrom("project_checklists")
       .select(db.fn.count("id").as("count"))
       .where("project_id", "=", projectId)
-      .where("phase", "=", requiredPhase)
+      .where("phase", "=", requiredPhase as any)
       .where("is_mandatory", "=", true)
       .where("completed", "=", false)
       .executeTakeFirstOrThrow();
@@ -280,15 +281,9 @@ export async function calculateQualityScore(projectId: string): Promise<number> 
     .selectFrom("project_checklists")
     .select([
       db.fn.count("id").as("total"),
-      db.fn.count(
-        db.raw("CASE WHEN completed = TRUE THEN 1 END")
-      ).as("completed"),
-      db.fn.count(
-        db.raw("CASE WHEN requires_photo AND photo_url IS NOT NULL THEN 1 END")
-      ).as("with_photos"),
-      db.fn.count(
-        db.raw("CASE WHEN requires_photo THEN 1 END")
-      ).as("needs_photos"),
+      sql<number>`COUNT(CASE WHEN completed = TRUE THEN 1 END)`.as("completed"),
+      sql<number>`COUNT(CASE WHEN requires_photo AND photo_url IS NOT NULL THEN 1 END)`.as("with_photos"),
+      sql<number>`COUNT(CASE WHEN requires_photo THEN 1 END)`.as("needs_photos"),
     ])
     .where("project_id", "=", projectId)
     .executeTakeFirstOrThrow();

@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { db } from "../db/connection.js";
 import { createChildLogger } from "../config/logger.js";
 import { sendSlackAlert } from "../connectors/slack/client.js";
@@ -157,16 +158,10 @@ export async function calculateOtifMetrics(
     .selectFrom("purchase_orders")
     .select([
       db.fn.count("id").as("total"),
-      db.fn.count(db.raw("CASE WHEN status = 'delivered' THEN 1 END")).as("delivered"),
-      db.fn.count(db.raw("CASE WHEN delivered_on_time = TRUE THEN 1 END")).as("on_time"),
-      db.fn.count(db.raw("CASE WHEN delivered_on_time = FALSE THEN 1 END")).as("late"),
-      db.fn
-        .avg(
-          db.raw(
-            "CASE WHEN actual_delivery_at IS NOT NULL AND ordered_at IS NOT NULL THEN EXTRACT(EPOCH FROM (actual_delivery_at - ordered_at)) / 86400 END"
-          )
-        )
-        .as("avg_lead_time"),
+      sql<number>`COUNT(CASE WHEN status = 'delivered' THEN 1 END)`.as("delivered"),
+      sql<number>`COUNT(CASE WHEN delivered_on_time = TRUE THEN 1 END)`.as("on_time"),
+      sql<number>`COUNT(CASE WHEN delivered_on_time = FALSE THEN 1 END)`.as("late"),
+      sql<number>`AVG(CASE WHEN actual_delivery_at IS NOT NULL AND ordered_at IS NOT NULL THEN EXTRACT(EPOCH FROM (actual_delivery_at - ordered_at)) / 86400 END)`.as("avg_lead_time"),
     ]);
 
   if (supplierFilter) {

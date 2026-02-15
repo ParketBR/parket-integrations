@@ -295,6 +295,153 @@ export interface ProjectCommunicationTable {
 
 export type ProjectCommunication = Selectable<ProjectCommunicationTable>;
 
+// ─── Financial Transaction ────────────────────────────
+export interface FinancialTransactionTable {
+  id: Generated<string>;
+  erp_invoice_id: string | null;
+  project_id: string | null;
+  type: "receivable" | "payable";
+  description: string;
+  gross_value: number;
+  tax_value: number;
+  net_value: number;
+  cost_center: string | null;
+  category: string | null;
+  issued_at: Date;
+  due_at: Date;
+  paid_at: Date | null;
+  status: "open" | "paid" | "overdue" | "cancelled";
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export type FinancialTransaction = Selectable<FinancialTransactionTable>;
+export type NewFinancialTransaction = Insertable<FinancialTransactionTable>;
+
+// ─── Financial Payment ────────────────────────────────
+export interface FinancialPaymentTable {
+  id: Generated<string>;
+  erp_payment_id: string | null;
+  erp_invoice_id: string | null;
+  amount: number;
+  method: "pix" | "boleto" | "transfer" | "credit_card" | "cash";
+  paid_at: Date;
+  bank_account: string | null;
+  created_at: Generated<Date>;
+}
+
+export type FinancialPayment = Selectable<FinancialPaymentTable>;
+export type NewFinancialPayment = Insertable<FinancialPaymentTable>;
+
+// ─── NPS Survey ───────────────────────────────────────
+export interface NpsSurveyTable {
+  id: Generated<string>;
+  project_id: string;
+  respondent_type: "client" | "architect";
+  respondent_phone: string;
+  respondent_name: string;
+  score: number | null;
+  feedback: string | null;
+  status: "pending" | "sent" | "responded" | "expired";
+  sent_at: Date | null;
+  responded_at: Date | null;
+  created_at: Generated<Date>;
+}
+
+export type NpsSurvey = Selectable<NpsSurveyTable>;
+
+// ─── Quality Incident ─────────────────────────────────
+export interface QualityIncidentTable {
+  id: Generated<string>;
+  project_id: string;
+  type: "rework" | "defect" | "complaint" | "delay" | "material_issue";
+  severity: "low" | "medium" | "high" | "critical";
+  description: string;
+  root_cause: string | null;
+  resolution: string | null;
+  cost_impact: number;
+  status: "open" | "investigating" | "resolved" | "closed";
+  resolved_at: Date | null;
+  created_at: Generated<Date>;
+}
+
+export type QualityIncident = Selectable<QualityIncidentTable>;
+
+// ─── Growth Experiment ────────────────────────────────
+export interface GrowthExperimentTable {
+  id: Generated<string>;
+  name: string;
+  hypothesis: string;
+  channel: string;
+  funnel: string;
+  variable_tested: string;
+  success_metric: string;
+  target_value: number;
+  budget: number;
+  duration_days: number;
+  control_description: string;
+  variant_description: string;
+  status: "running" | "won" | "lost" | "inconclusive" | "cancelled";
+  actual_lift_pct: number | null;
+  learnings: string | null;
+  started_at: Date;
+  ends_at: Date;
+  closed_at: Date | null;
+  created_at: Generated<Date>;
+}
+
+export type GrowthExperiment = Selectable<GrowthExperimentTable>;
+
+// ─── Experiment Measurement ───────────────────────────
+export interface ExperimentMeasurementTable {
+  id: Generated<string>;
+  experiment_id: string;
+  group: "control" | "variant";
+  metric: string;
+  value: number;
+  sample_size: number;
+  measured_at: Date;
+  created_at: Generated<Date>;
+}
+
+export type ExperimentMeasurement = Selectable<ExperimentMeasurementTable>;
+
+// ─── Prospect ─────────────────────────────────────────
+export interface ProspectTable {
+  id: Generated<string>;
+  name: string;
+  type: "architect" | "incorporadora" | "designer" | "builder";
+  company: string | null;
+  phone: string | null;
+  email: string | null;
+  instagram: string | null;
+  region: string;
+  tier: "high_potential" | "build_relationship" | "nurture";
+  rationale: string;
+  entry_strategy: string | null;
+  estimated_annual_value: number;
+  relationship_score: number;
+  status: "identified" | "contacted" | "engaged" | "converted" | "disqualified";
+  converted_lead_id: string | null;
+  last_contact_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export type Prospect = Selectable<ProspectTable>;
+
+// ─── Prospect Connection ──────────────────────────────
+export interface ProspectConnectionTable {
+  id: Generated<string>;
+  prospect_id: string;
+  channel: "whatsapp" | "email" | "instagram_dm" | "phone" | "visit" | "event";
+  description: string;
+  outcome: "positive" | "neutral" | "negative" | "no_response";
+  created_at: Generated<Date>;
+}
+
+export type ProspectConnection = Selectable<ProspectConnectionTable>;
+
 // ─── Database ──────────────────────────────────────
 export interface Database {
   leads: LeadTable;
@@ -310,4 +457,12 @@ export interface Database {
   project_checklists: ProjectChecklistTable;
   purchase_orders: PurchaseOrderTable;
   project_communications: ProjectCommunicationTable;
+  financial_transactions: FinancialTransactionTable;
+  financial_payments: FinancialPaymentTable;
+  nps_surveys: NpsSurveyTable;
+  quality_incidents: QualityIncidentTable;
+  growth_experiments: GrowthExperimentTable;
+  experiment_measurements: ExperimentMeasurementTable;
+  prospects: ProspectTable;
+  prospect_connections: ProspectConnectionTable;
 }

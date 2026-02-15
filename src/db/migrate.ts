@@ -582,6 +582,378 @@ const MIGRATIONS = [
       ORDER BY week_start DESC;
     `,
   },
+  {
+    name: "016_create_financial_transactions",
+    up: `
+      CREATE TABLE IF NOT EXISTS financial_transactions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        erp_invoice_id TEXT UNIQUE,
+        project_id UUID REFERENCES projects(id),
+        type TEXT NOT NULL CHECK (type IN ('receivable','payable')),
+        description TEXT NOT NULL,
+        gross_value NUMERIC NOT NULL DEFAULT 0,
+        tax_value NUMERIC NOT NULL DEFAULT 0,
+        net_value NUMERIC NOT NULL DEFAULT 0,
+        cost_center TEXT,
+        category TEXT,
+        issued_at TIMESTAMPTZ NOT NULL,
+        due_at TIMESTAMPTZ NOT NULL,
+        paid_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','paid','overdue','cancelled')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_fin_tx_project ON financial_transactions(project_id);
+      CREATE INDEX IF NOT EXISTS idx_fin_tx_type ON financial_transactions(type);
+      CREATE INDEX IF NOT EXISTS idx_fin_tx_status ON financial_transactions(status);
+      CREATE INDEX IF NOT EXISTS idx_fin_tx_due ON financial_transactions(due_at);
+      CREATE INDEX IF NOT EXISTS idx_fin_tx_issued ON financial_transactions(issued_at);
+      CREATE INDEX IF NOT EXISTS idx_fin_tx_category ON financial_transactions(category);
+    `,
+  },
+  {
+    name: "017_create_financial_payments",
+    up: `
+      CREATE TABLE IF NOT EXISTS financial_payments (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        erp_payment_id TEXT UNIQUE,
+        erp_invoice_id TEXT REFERENCES financial_transactions(erp_invoice_id),
+        amount NUMERIC NOT NULL,
+        method TEXT NOT NULL CHECK (method IN ('pix','boleto','transfer','credit_card','cash')),
+        paid_at TIMESTAMPTZ NOT NULL,
+        bank_account TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_fin_pay_invoice ON financial_payments(erp_invoice_id);
+      CREATE INDEX IF NOT EXISTS idx_fin_pay_method ON financial_payments(method);
+      CREATE INDEX IF NOT EXISTS idx_fin_pay_date ON financial_payments(paid_at);
+    `,
+  },
+  {
+    name: "018_create_financial_dashboard_views",
+    up: `
+      -- Monthly P&L view
+      CREATE OR REPLACE VIEW v_monthly_pnl AS
+      SELECT
+        DATE_TRUNC('month', issued_at)::date AS month,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable' AND status != 'cancelled'), 0) AS revenue,
+        COALESCE(SUM(tax_value) FILTER (WHERE type = 'receivable' AND status != 'cancelled'), 0) AS taxes,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND status != 'cancelled'), 0) AS costs,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND category = 'material' AND status != 'cancelled'), 0) AS material_costs,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND category = 'labor' AND status != 'cancelled'), 0) AS labor_costs,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND category IN ('marketing','ads','advertising') AND status != 'cancelled'), 0) AS marketing_costs,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable' AND status != 'cancelled'), 0)
+          - COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND status != 'cancelled'), 0) AS gross_profit,
+        CASE WHEN COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable' AND status != 'cancelled'), 0) > 0
+          THEN ROUND(100.0 * (
+            COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable' AND status != 'cancelled'), 0)
+            - COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND status != 'cancelled'), 0)
+          ) / COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable' AND status != 'cancelled'), 0), 1)
+        END AS margin_pct
+      FROM financial_transactions
+      GROUP BY DATE_TRUNC('month', issued_at)
+      ORDER BY month DESC;
+
+      -- Cash flow view (due vs paid)
+      CREATE OR REPLACE VIEW v_cashflow AS
+      SELECT
+        DATE_TRUNC('month', due_at)::date AS month,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable'), 0) AS receivable_due,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable' AND status = 'paid'), 0) AS receivable_paid,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'payable'), 0) AS payable_due,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'payable' AND status = 'paid'), 0) AS payable_paid,
+        COALESCE(SUM(net_value) FILTER (WHERE type = 'receivable'), 0)
+          - COALESCE(SUM(net_value) FILTER (WHERE type = 'payable'), 0) AS net_flow
+      FROM financial_transactions
+      WHERE status != 'cancelled'
+      GROUP BY DATE_TRUNC('month', due_at)
+      ORDER BY month DESC;
+
+      -- Project margins view
+      CREATE OR REPLACE VIEW v_project_margins AS
+      SELECT
+        p.id AS project_id,
+        p.name AS project_name,
+        p.client_name,
+        p.contract_value,
+        p.status,
+        COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'receivable'), 0) AS revenue,
+        COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'payable'), 0) AS costs,
+        COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'receivable'), 0)
+          - COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'payable'), 0) AS margin,
+        CASE WHEN COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'receivable'), 0) > 0
+          THEN ROUND(100.0 * (
+            COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'receivable'), 0)
+            - COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'payable'), 0)
+          ) / COALESCE(SUM(ft.net_value) FILTER (WHERE ft.type = 'receivable'), 0), 1)
+        END AS margin_pct
+      FROM projects p
+      LEFT JOIN financial_transactions ft ON ft.project_id = p.id AND ft.status != 'cancelled'
+      WHERE p.status != 'cancelado'
+      GROUP BY p.id, p.name, p.client_name, p.contract_value, p.status
+      ORDER BY margin_pct ASC NULLS LAST;
+
+      -- Overdue receivables
+      CREATE OR REPLACE VIEW v_overdue_receivables AS
+      SELECT
+        ft.id,
+        ft.description,
+        ft.net_value,
+        ft.due_at,
+        EXTRACT(EPOCH FROM (NOW() - ft.due_at)) / 86400 AS days_overdue,
+        p.name AS project_name,
+        p.client_name
+      FROM financial_transactions ft
+      LEFT JOIN projects p ON p.id = ft.project_id
+      WHERE ft.type = 'receivable'
+        AND ft.status = 'overdue'
+      ORDER BY days_overdue DESC;
+
+      -- Payment methods breakdown
+      CREATE OR REPLACE VIEW v_payment_methods AS
+      SELECT
+        method,
+        DATE_TRUNC('month', paid_at)::date AS month,
+        COUNT(*) AS payment_count,
+        COALESCE(SUM(amount), 0) AS total_amount
+      FROM financial_payments
+      GROUP BY method, DATE_TRUNC('month', paid_at)
+      ORDER BY month DESC, total_amount DESC;
+
+      -- CAC approximation view
+      CREATE OR REPLACE VIEW v_cac_monthly AS
+      SELECT
+        DATE_TRUNC('month', l.closed_at)::date AS month,
+        COUNT(DISTINCT l.id) AS new_customers,
+        COALESCE(SUM(l.estimated_ticket), 0) AS revenue_from_new,
+        (
+          SELECT COALESCE(SUM(ft2.net_value), 0)
+          FROM financial_transactions ft2
+          WHERE ft2.type = 'payable'
+            AND ft2.category IN ('marketing','ads','advertising','sales','commission','comissao')
+            AND DATE_TRUNC('month', ft2.issued_at) = DATE_TRUNC('month', l.closed_at)
+            AND ft2.status != 'cancelled'
+        ) AS acquisition_spend,
+        CASE WHEN COUNT(DISTINCT l.id) > 0 THEN
+          ROUND((
+            SELECT COALESCE(SUM(ft2.net_value), 0)
+            FROM financial_transactions ft2
+            WHERE ft2.type = 'payable'
+              AND ft2.category IN ('marketing','ads','advertising','sales','commission','comissao')
+              AND DATE_TRUNC('month', ft2.issued_at) = DATE_TRUNC('month', l.closed_at)
+              AND ft2.status != 'cancelled'
+          ) / COUNT(DISTINCT l.id), 0)
+        END AS cac
+      FROM leads l
+      WHERE l.stage = 'fechado' AND l.closed_at IS NOT NULL
+      GROUP BY DATE_TRUNC('month', l.closed_at)
+      ORDER BY month DESC;
+    `,
+  },
+  {
+    name: "019_create_nps_surveys",
+    up: `
+      CREATE TABLE IF NOT EXISTS nps_surveys (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id),
+        respondent_type TEXT NOT NULL CHECK (respondent_type IN ('client','architect')),
+        respondent_phone TEXT NOT NULL,
+        respondent_name TEXT NOT NULL,
+        score SMALLINT CHECK (score >= 0 AND score <= 10),
+        feedback TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','responded','expired')),
+        sent_at TIMESTAMPTZ,
+        responded_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_nps_project ON nps_surveys(project_id);
+      CREATE INDEX IF NOT EXISTS idx_nps_phone ON nps_surveys(respondent_phone);
+      CREATE INDEX IF NOT EXISTS idx_nps_status ON nps_surveys(status);
+    `,
+  },
+  {
+    name: "020_create_quality_incidents",
+    up: `
+      CREATE TABLE IF NOT EXISTS quality_incidents (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id),
+        type TEXT NOT NULL CHECK (type IN ('rework','defect','complaint','delay','material_issue')),
+        severity TEXT NOT NULL CHECK (severity IN ('low','medium','high','critical')),
+        description TEXT NOT NULL,
+        root_cause TEXT,
+        resolution TEXT,
+        cost_impact NUMERIC NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','investigating','resolved','closed')),
+        resolved_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_qi_project ON quality_incidents(project_id);
+      CREATE INDEX IF NOT EXISTS idx_qi_type ON quality_incidents(type);
+      CREATE INDEX IF NOT EXISTS idx_qi_severity ON quality_incidents(severity);
+      CREATE INDEX IF NOT EXISTS idx_qi_status ON quality_incidents(status) WHERE status != 'closed';
+    `,
+  },
+  {
+    name: "021_create_growth_experiments",
+    up: `
+      CREATE TABLE IF NOT EXISTS growth_experiments (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name TEXT NOT NULL,
+        hypothesis TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        funnel TEXT NOT NULL,
+        variable_tested TEXT NOT NULL,
+        success_metric TEXT NOT NULL,
+        target_value NUMERIC NOT NULL,
+        budget NUMERIC NOT NULL DEFAULT 0,
+        duration_days INTEGER NOT NULL DEFAULT 14,
+        control_description TEXT NOT NULL,
+        variant_description TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','won','lost','inconclusive','cancelled')),
+        actual_lift_pct NUMERIC,
+        learnings TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ends_at TIMESTAMPTZ NOT NULL,
+        closed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS experiment_measurements (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        experiment_id UUID NOT NULL REFERENCES growth_experiments(id) ON DELETE CASCADE,
+        "group" TEXT NOT NULL CHECK ("group" IN ('control','variant')),
+        metric TEXT NOT NULL,
+        value NUMERIC NOT NULL,
+        sample_size INTEGER NOT NULL DEFAULT 0,
+        measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_exp_status ON growth_experiments(status);
+      CREATE INDEX IF NOT EXISTS idx_exp_channel ON growth_experiments(channel);
+      CREATE INDEX IF NOT EXISTS idx_exp_meas_exp ON experiment_measurements(experiment_id);
+    `,
+  },
+  {
+    name: "022_create_prospects",
+    up: `
+      CREATE TABLE IF NOT EXISTS prospects (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('architect','incorporadora','designer','builder')),
+        company TEXT,
+        phone TEXT,
+        email TEXT,
+        instagram TEXT,
+        region TEXT NOT NULL,
+        tier TEXT NOT NULL CHECK (tier IN ('high_potential','build_relationship','nurture')),
+        rationale TEXT NOT NULL,
+        entry_strategy TEXT,
+        estimated_annual_value NUMERIC NOT NULL DEFAULT 0,
+        relationship_score INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'identified' CHECK (status IN ('identified','contacted','engaged','converted','disqualified')),
+        converted_lead_id UUID REFERENCES leads(id),
+        last_contact_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS prospect_connections (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL CHECK (channel IN ('whatsapp','email','instagram_dm','phone','visit','event')),
+        description TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('positive','neutral','negative','no_response')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_prospect_type ON prospects(type);
+      CREATE INDEX IF NOT EXISTS idx_prospect_region ON prospects(region);
+      CREATE INDEX IF NOT EXISTS idx_prospect_tier ON prospects(tier);
+      CREATE INDEX IF NOT EXISTS idx_prospect_status ON prospects(status);
+      CREATE INDEX IF NOT EXISTS idx_prospect_conn ON prospect_connections(prospect_id);
+    `,
+  },
+  {
+    name: "023_create_intelligence_dashboard_views",
+    up: `
+      -- NPS overview
+      CREATE OR REPLACE VIEW v_nps_overview AS
+      SELECT
+        respondent_type,
+        COUNT(*) FILTER (WHERE status = 'responded') AS responses,
+        COUNT(*) FILTER (WHERE score >= 9) AS promoters,
+        COUNT(*) FILTER (WHERE score BETWEEN 7 AND 8) AS passives,
+        COUNT(*) FILTER (WHERE score <= 6) AS detractors,
+        ROUND(AVG(score) FILTER (WHERE status = 'responded'), 1) AS avg_score,
+        CASE WHEN COUNT(*) FILTER (WHERE status = 'responded') > 0
+          THEN ROUND(100.0 * (
+            COUNT(*) FILTER (WHERE score >= 9) - COUNT(*) FILTER (WHERE score <= 6)
+          ) / COUNT(*) FILTER (WHERE status = 'responded'), 0)
+        END AS nps
+      FROM nps_surveys
+      GROUP BY respondent_type;
+
+      -- Quality incidents by type
+      CREATE OR REPLACE VIEW v_quality_incidents AS
+      SELECT
+        type,
+        severity,
+        COUNT(*) AS incident_count,
+        COALESCE(SUM(cost_impact), 0) AS total_cost,
+        COUNT(*) FILTER (WHERE status = 'open') AS open_count,
+        COUNT(*) FILTER (WHERE status = 'resolved') AS resolved_count
+      FROM quality_incidents
+      GROUP BY type, severity
+      ORDER BY incident_count DESC;
+
+      -- Rework matrix
+      CREATE OR REPLACE VIEW v_rework_matrix AS
+      SELECT
+        root_cause,
+        COUNT(*) AS occurrences,
+        COALESCE(SUM(cost_impact), 0) AS total_cost,
+        ROUND(AVG(cost_impact), 0) AS avg_cost
+      FROM quality_incidents
+      WHERE type = 'rework' AND root_cause IS NOT NULL
+      GROUP BY root_cause
+      ORDER BY occurrences DESC;
+
+      -- Experiment scoreboard
+      CREATE OR REPLACE VIEW v_experiment_scoreboard AS
+      SELECT
+        channel,
+        COUNT(*) AS total_experiments,
+        COUNT(*) FILTER (WHERE status = 'won') AS winners,
+        COUNT(*) FILTER (WHERE status = 'lost') AS losers,
+        COUNT(*) FILTER (WHERE status = 'running') AS running,
+        CASE WHEN COUNT(*) FILTER (WHERE status IN ('won','lost','inconclusive')) > 0
+          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'won') /
+               COUNT(*) FILTER (WHERE status IN ('won','lost','inconclusive')), 1)
+        END AS win_rate_pct,
+        ROUND(AVG(actual_lift_pct) FILTER (WHERE status = 'won'), 1) AS avg_winning_lift
+      FROM growth_experiments
+      GROUP BY channel;
+
+      -- Prospect pipeline
+      CREATE OR REPLACE VIEW v_prospect_pipeline AS
+      SELECT
+        type,
+        region,
+        tier,
+        status,
+        COUNT(*) AS prospect_count,
+        COALESCE(SUM(estimated_annual_value), 0) AS total_estimated_value,
+        ROUND(AVG(relationship_score), 0) AS avg_relationship_score
+      FROM prospects
+      GROUP BY type, region, tier, status
+      ORDER BY total_estimated_value DESC;
+    `,
+  },
 ];
 
 async function migrate() {

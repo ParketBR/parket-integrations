@@ -66,10 +66,10 @@ export async function runEscalationCheck(): Promise<number> {
       .execute();
 
     const hasSlackEscalation = escalationActivities.some(
-      (a) => a.type === "escalation_slack"
+      (a) => (a.type as string) === "escalation_slack"
     );
     const hasCriticalEscalation = escalationActivities.some(
-      (a) => a.type === "escalation_critical"
+      (a) => (a.type as string) === "escalation_critical"
     );
 
     try {

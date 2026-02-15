@@ -65,7 +65,7 @@ projectRouter.get("/", async (req: Request, res: Response) => {
     let query = db.selectFrom("projects").selectAll().orderBy("created_at", "desc");
 
     if (req.query.status) {
-      query = query.where("status", "=", req.query.status as string);
+      query = query.where("status", "=", req.query.status as any);
     }
 
     const limit = Math.min(Number(req.query.limit) || 50, 100);

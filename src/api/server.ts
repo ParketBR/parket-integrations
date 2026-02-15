@@ -10,6 +10,8 @@ import { whatsappWebhookRouter } from "./webhooks/whatsapp.js";
 import { pipedriveWebhookRouter } from "./webhooks/pipedrive.js";
 import { proposalRouter } from "./proposals.js";
 import { projectRouter } from "./projects.js";
+import { financeRouter } from "./finance.js";
+import { intelligenceRouter } from "./intelligence.js";
 
 const log = createChildLogger("server");
 
@@ -49,6 +51,8 @@ export function createServer() {
   // API routes
   app.use("/api/proposals", proposalRouter);
   app.use("/api/projects", projectRouter);
+  app.use("/api/finance", financeRouter);
+  app.use("/api/intelligence", intelligenceRouter);
 
   // 404
   app.use((_req, res) => {
