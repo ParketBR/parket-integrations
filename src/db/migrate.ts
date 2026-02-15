@@ -724,32 +724,36 @@ const MIGRATIONS = [
 
       -- CAC approximation view
       CREATE OR REPLACE VIEW v_cac_monthly AS
+      WITH monthly_customers AS (
+        SELECT
+          DATE_TRUNC('month', closed_at)::date AS month,
+          COUNT(DISTINCT id) AS new_customers,
+          COALESCE(SUM(estimated_ticket), 0) AS revenue_from_new
+        FROM leads
+        WHERE stage = 'fechado' AND closed_at IS NOT NULL
+        GROUP BY DATE_TRUNC('month', closed_at)
+      ),
+      monthly_spend AS (
+        SELECT
+          DATE_TRUNC('month', issued_at)::date AS month,
+          COALESCE(SUM(net_value), 0) AS acquisition_spend
+        FROM financial_transactions
+        WHERE type = 'payable'
+          AND category IN ('marketing','ads','advertising','sales','commission','comissao')
+          AND status != 'cancelled'
+        GROUP BY DATE_TRUNC('month', issued_at)
+      )
       SELECT
-        DATE_TRUNC('month', l.closed_at)::date AS month,
-        COUNT(DISTINCT l.id) AS new_customers,
-        COALESCE(SUM(l.estimated_ticket), 0) AS revenue_from_new,
-        (
-          SELECT COALESCE(SUM(ft2.net_value), 0)
-          FROM financial_transactions ft2
-          WHERE ft2.type = 'payable'
-            AND ft2.category IN ('marketing','ads','advertising','sales','commission','comissao')
-            AND DATE_TRUNC('month', ft2.issued_at) = DATE_TRUNC('month', l.closed_at)
-            AND ft2.status != 'cancelled'
-        ) AS acquisition_spend,
-        CASE WHEN COUNT(DISTINCT l.id) > 0 THEN
-          ROUND((
-            SELECT COALESCE(SUM(ft2.net_value), 0)
-            FROM financial_transactions ft2
-            WHERE ft2.type = 'payable'
-              AND ft2.category IN ('marketing','ads','advertising','sales','commission','comissao')
-              AND DATE_TRUNC('month', ft2.issued_at) = DATE_TRUNC('month', l.closed_at)
-              AND ft2.status != 'cancelled'
-          ) / COUNT(DISTINCT l.id), 0)
+        mc.month,
+        mc.new_customers,
+        mc.revenue_from_new,
+        COALESCE(ms.acquisition_spend, 0) AS acquisition_spend,
+        CASE WHEN mc.new_customers > 0
+          THEN ROUND(COALESCE(ms.acquisition_spend, 0) / mc.new_customers, 0)
         END AS cac
-      FROM leads l
-      WHERE l.stage = 'fechado' AND l.closed_at IS NOT NULL
-      GROUP BY DATE_TRUNC('month', l.closed_at)
-      ORDER BY month DESC;
+      FROM monthly_customers mc
+      LEFT JOIN monthly_spend ms ON ms.month = mc.month
+      ORDER BY mc.month DESC;
     `,
   },
   {
