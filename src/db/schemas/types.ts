@@ -176,6 +176,125 @@ export interface PipelineSnapshotTable {
 
 export type PipelineSnapshot = Selectable<PipelineSnapshotTable>;
 
+// ─── Project (Obra) ────────────────────────────────
+export interface ProjectTable {
+  id: Generated<string>;
+  lead_id: string;
+  proposal_id: string | null;
+  pipedrive_deal_id: number | null;
+
+  // Info
+  name: string;
+  client_name: string;
+  client_phone: string;
+  architect_name: string | null;
+  architect_phone: string | null;
+  location: string;
+  address: string | null;
+
+  // Scope
+  project_type: "residential" | "commercial" | "corporate";
+  products: Record<string, unknown>[];
+  total_area_m2: number;
+  contract_value: number;
+
+  // Status
+  status: "handoff" | "vistoria" | "material_pedido" | "aguardando_material" | "agendado" | "em_execucao" | "entrega" | "pos_obra" | "concluido" | "cancelado";
+
+  // Dates
+  contract_signed_at: Date;
+  vistoria_scheduled_at: Date | null;
+  vistoria_completed_at: Date | null;
+  installation_start_at: Date | null;
+  installation_end_at: Date | null;
+  delivered_at: Date | null;
+  estimated_delivery_at: Date | null;
+
+  // Quality
+  quality_score: number | null;
+  has_rework: Generated<boolean>;
+  rework_notes: string | null;
+
+  // Logistics constraints
+  logistics_notes: string | null;
+  access_hours: string | null;
+  elevator_available: boolean | null;
+  floor_number: number | null;
+
+  // Contacts
+  site_contact_name: string | null;
+  site_contact_phone: string | null;
+
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export type Project = Selectable<ProjectTable>;
+export type NewProject = Insertable<ProjectTable>;
+export type ProjectUpdate = Updateable<ProjectTable>;
+
+// ─── Project Checklist ─────────────────────────────
+export interface ProjectChecklistTable {
+  id: Generated<string>;
+  project_id: string;
+  phase: "pre_obra" | "instalacao" | "entrega" | "pos_obra";
+  item_order: number;
+  description: string;
+  is_mandatory: Generated<boolean>;
+  requires_photo: Generated<boolean>;
+
+  // Completion
+  completed: Generated<boolean>;
+  completed_by: string | null;
+  completed_at: Date | null;
+  photo_url: string | null;
+  notes: string | null;
+
+  created_at: Generated<Date>;
+}
+
+export type ProjectChecklist = Selectable<ProjectChecklistTable>;
+
+// ─── Purchase Order ────────────────────────────────
+export interface PurchaseOrderTable {
+  id: Generated<string>;
+  project_id: string;
+  supplier: string;
+  description: string;
+  items: Record<string, unknown>[];
+  total_value: number;
+
+  status: "draft" | "sent" | "confirmed" | "production" | "shipped" | "delivered" | "cancelled";
+
+  ordered_at: Date | null;
+  estimated_delivery_at: Date | null;
+  actual_delivery_at: Date | null;
+  delivered_on_time: boolean | null;
+
+  tracking_code: string | null;
+  notes: string | null;
+
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export type PurchaseOrder = Selectable<PurchaseOrderTable>;
+export type NewPurchaseOrder = Insertable<PurchaseOrderTable>;
+
+// ─── Project Communication Log ─────────────────────
+export interface ProjectCommunicationTable {
+  id: Generated<string>;
+  project_id: string;
+  recipient_type: "client" | "architect" | "site_contact" | "internal";
+  recipient_phone: string | null;
+  channel: "whatsapp" | "email" | "call";
+  message: string;
+  template_key: string | null;
+  sent_at: Generated<Date>;
+}
+
+export type ProjectCommunication = Selectable<ProjectCommunicationTable>;
+
 // ─── Database ──────────────────────────────────────
 export interface Database {
   leads: LeadTable;
@@ -187,4 +306,8 @@ export interface Database {
   follow_up_executions: FollowUpExecutionTable;
   proposals: ProposalTable;
   pipeline_snapshots: PipelineSnapshotTable;
+  projects: ProjectTable;
+  project_checklists: ProjectChecklistTable;
+  purchase_orders: PurchaseOrderTable;
+  project_communications: ProjectCommunicationTable;
 }

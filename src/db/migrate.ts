@@ -355,6 +355,233 @@ const MIGRATIONS = [
       ORDER BY week_start DESC;
     `,
   },
+  {
+    name: "011_create_projects",
+    up: `
+      CREATE TABLE IF NOT EXISTS projects (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        lead_id UUID NOT NULL REFERENCES leads(id),
+        proposal_id UUID REFERENCES proposals(id),
+        pipedrive_deal_id BIGINT,
+
+        name TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        client_phone TEXT NOT NULL,
+        architect_name TEXT,
+        architect_phone TEXT,
+        location TEXT NOT NULL,
+        address TEXT,
+
+        project_type TEXT NOT NULL CHECK (project_type IN ('residential','commercial','corporate')),
+        products JSONB NOT NULL DEFAULT '[]',
+        total_area_m2 NUMERIC NOT NULL DEFAULT 0,
+        contract_value NUMERIC NOT NULL DEFAULT 0,
+
+        status TEXT NOT NULL DEFAULT 'handoff' CHECK (status IN (
+          'handoff','vistoria','material_pedido','aguardando_material',
+          'agendado','em_execucao','entrega','pos_obra','concluido','cancelado'
+        )),
+
+        contract_signed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        vistoria_scheduled_at TIMESTAMPTZ,
+        vistoria_completed_at TIMESTAMPTZ,
+        installation_start_at TIMESTAMPTZ,
+        installation_end_at TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ,
+        estimated_delivery_at TIMESTAMPTZ,
+
+        quality_score NUMERIC,
+        has_rework BOOLEAN NOT NULL DEFAULT FALSE,
+        rework_notes TEXT,
+
+        logistics_notes TEXT,
+        access_hours TEXT,
+        elevator_available BOOLEAN,
+        floor_number INTEGER,
+
+        site_contact_name TEXT,
+        site_contact_phone TEXT,
+
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_projects_lead ON projects(lead_id);
+      CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+      CREATE INDEX IF NOT EXISTS idx_projects_delivery ON projects(estimated_delivery_at);
+    `,
+  },
+  {
+    name: "012_create_project_checklists",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_checklists (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        phase TEXT NOT NULL CHECK (phase IN ('pre_obra','instalacao','entrega','pos_obra')),
+        item_order INTEGER NOT NULL,
+        description TEXT NOT NULL,
+        is_mandatory BOOLEAN NOT NULL DEFAULT TRUE,
+        requires_photo BOOLEAN NOT NULL DEFAULT FALSE,
+
+        completed BOOLEAN NOT NULL DEFAULT FALSE,
+        completed_by TEXT,
+        completed_at TIMESTAMPTZ,
+        photo_url TEXT,
+        notes TEXT,
+
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_checklist_project ON project_checklists(project_id);
+      CREATE INDEX IF NOT EXISTS idx_checklist_phase ON project_checklists(project_id, phase);
+    `,
+  },
+  {
+    name: "013_create_purchase_orders",
+    up: `
+      CREATE TABLE IF NOT EXISTS purchase_orders (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        supplier TEXT NOT NULL,
+        description TEXT NOT NULL,
+        items JSONB NOT NULL DEFAULT '[]',
+        total_value NUMERIC NOT NULL DEFAULT 0,
+
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN (
+          'draft','sent','confirmed','production','shipped','delivered','cancelled'
+        )),
+
+        ordered_at TIMESTAMPTZ,
+        estimated_delivery_at TIMESTAMPTZ,
+        actual_delivery_at TIMESTAMPTZ,
+        delivered_on_time BOOLEAN,
+
+        tracking_code TEXT,
+        notes TEXT,
+
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_po_project ON purchase_orders(project_id);
+      CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders(status);
+    `,
+  },
+  {
+    name: "014_create_project_communications",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_communications (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        recipient_type TEXT NOT NULL CHECK (recipient_type IN ('client','architect','site_contact','internal')),
+        recipient_phone TEXT,
+        channel TEXT NOT NULL DEFAULT 'whatsapp' CHECK (channel IN ('whatsapp','email','call')),
+        message TEXT NOT NULL,
+        template_key TEXT,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_projcomm_project ON project_communications(project_id);
+    `,
+  },
+  {
+    name: "015_create_obras_dashboard_views",
+    up: `
+      -- Projects overview
+      CREATE OR REPLACE VIEW v_projects_overview AS
+      SELECT
+        status,
+        project_type,
+        COUNT(*) as project_count,
+        COALESCE(SUM(contract_value), 0) as total_value,
+        COALESCE(SUM(total_area_m2), 0) as total_area,
+        COUNT(*) FILTER (WHERE has_rework = TRUE) as rework_count,
+        ROUND(AVG(quality_score)::numeric, 1) as avg_quality
+      FROM projects
+      WHERE status != 'cancelado'
+      GROUP BY status, project_type
+      ORDER BY
+        CASE status
+          WHEN 'handoff' THEN 1
+          WHEN 'vistoria' THEN 2
+          WHEN 'material_pedido' THEN 3
+          WHEN 'aguardando_material' THEN 4
+          WHEN 'agendado' THEN 5
+          WHEN 'em_execucao' THEN 6
+          WHEN 'entrega' THEN 7
+          WHEN 'pos_obra' THEN 8
+          WHEN 'concluido' THEN 9
+        END;
+
+      -- Project delays
+      CREATE OR REPLACE VIEW v_project_delays AS
+      SELECT
+        p.id,
+        p.name,
+        p.client_name,
+        p.status,
+        p.estimated_delivery_at,
+        p.contract_value,
+        EXTRACT(EPOCH FROM (NOW() - p.estimated_delivery_at)) / 86400 as days_overdue
+      FROM projects p
+      WHERE p.estimated_delivery_at < NOW()
+        AND p.status NOT IN ('concluido','cancelado','pos_obra')
+      ORDER BY days_overdue DESC;
+
+      -- Checklist compliance by project
+      CREATE OR REPLACE VIEW v_checklist_compliance AS
+      SELECT
+        p.id as project_id,
+        p.name as project_name,
+        p.status,
+        pc.phase,
+        COUNT(*) as total_items,
+        COUNT(*) FILTER (WHERE pc.completed = TRUE) as completed_items,
+        COUNT(*) FILTER (WHERE pc.is_mandatory AND pc.completed = FALSE) as pending_mandatory,
+        COUNT(*) FILTER (WHERE pc.requires_photo AND pc.photo_url IS NULL AND pc.completed = TRUE) as missing_photos,
+        CASE WHEN COUNT(*) > 0
+          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE pc.completed = TRUE) / COUNT(*), 1)
+        END as completion_pct
+      FROM projects p
+      JOIN project_checklists pc ON pc.project_id = p.id
+      WHERE p.status NOT IN ('concluido','cancelado')
+      GROUP BY p.id, p.name, p.status, pc.phase;
+
+      -- Purchase order OTIF
+      CREATE OR REPLACE VIEW v_purchase_order_otif AS
+      SELECT
+        supplier,
+        COUNT(*) as total_orders,
+        COUNT(*) FILTER (WHERE status = 'delivered') as delivered,
+        COUNT(*) FILTER (WHERE delivered_on_time = TRUE) as on_time,
+        COUNT(*) FILTER (WHERE delivered_on_time = FALSE) as late,
+        CASE WHEN COUNT(*) FILTER (WHERE status = 'delivered') > 0
+          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE delivered_on_time = TRUE) /
+               COUNT(*) FILTER (WHERE status = 'delivered'), 1)
+        END as otif_pct,
+        ROUND(AVG(
+          CASE WHEN actual_delivery_at IS NOT NULL AND ordered_at IS NOT NULL
+            THEN EXTRACT(EPOCH FROM (actual_delivery_at - ordered_at)) / 86400
+          END
+        )::numeric, 1) as avg_lead_time_days
+      FROM purchase_orders
+      GROUP BY supplier
+      ORDER BY total_orders DESC;
+
+      -- Weekly obras scoreboard
+      CREATE OR REPLACE VIEW v_obras_weekly AS
+      SELECT
+        DATE_TRUNC('week', created_at)::date as week_start,
+        COUNT(*) FILTER (WHERE status = 'handoff') as new_handoffs,
+        COUNT(*) FILTER (WHERE status = 'em_execucao') as in_execution,
+        COUNT(*) FILTER (WHERE status = 'concluido') as completed,
+        COUNT(*) FILTER (WHERE has_rework = TRUE) as rework_count,
+        COALESCE(SUM(contract_value) FILTER (WHERE status = 'concluido'), 0) as completed_value
+      FROM projects
+      GROUP BY DATE_TRUNC('week', created_at)
+      ORDER BY week_start DESC;
+    `,
+  },
 ];
 
 async function migrate() {
